@@ -1,4 +1,3 @@
-Here is a professional and detailed `README.md` content for your **Community Insurance Pool** Solidity project.
 
 ## README: Community Insurance Pool Smart Contract
 
