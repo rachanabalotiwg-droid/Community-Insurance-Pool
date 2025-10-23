@@ -1,6 +1,4 @@
 
-## README: Community Insurance Pool Smart Contract
-
 ### 🛡️ Project Title: Community Insurance Pool
 
 A decentralized, community-driven insurance pool built on the Ethereum blockchain. This contract allows members to pool their funds together and collectively mitigate risks by submitting and processing claims against the shared pool.
