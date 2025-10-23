@@ -1,11 +1,5 @@
 pragma solidity ^0.8.0;
 
-/**
- * @title CommunityInsurancePool
- * @author Your Name/Project Team
- * @notice A decentralized, community-driven insurance pool where members contribute
- * funds and can file claims against losses.
- */
 contract CommunityInsurancePool {
     // --- STATE VARIABLES ---
     
@@ -152,3 +146,4 @@ contract CommunityInsurancePool {
         contribute();
     }
 }
+
