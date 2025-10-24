@@ -1,149 +1,130 @@
 pragma solidity ^0.8.0;
 
 contract CommunityInsurancePool {
-    // --- STATE VARIABLES ---
-    
-    // 1. Mapping to track contributions from each member
-    mapping(address => uint256) public contributions;
-    
-    // 2. Total amount of Ether tracked within the pool
-    uint256 public totalPoolBalance;
+    address payable public owner;
+    uint256 public minimumContribution = 0.01 ether;
+    uint256 public memberCount = 0;
+    uint256 public totalPoolBalance = 0;
 
-    // 3. The minimum required contribution amount (e.g., 0.1 Ether)
-    uint256 public minContribution = 100000000000000000; 
+    struct Member {
+        uint256 balance;
+        bool isInsured;
+        uint256 registrationTimestamp;
+    }
 
-    // 4. A simple structure to represent a claim
     struct Claim {
+        uint256 claimId;
         address claimant;
-        uint256 amountRequested;
+        uint256 amount;
+        string description;
+        uint256 totalVotes;
+        mapping(address => bool) voted;
         bool approved;
-        bool processed;
+        bool paidOut;
     }
 
-    // 5. Array to store all submitted claims
-    Claim[] public claims;
+    mapping(address => Member) public members;
+    mapping(uint256 => Claim) public claims;
+    uint256 public nextClaimId = 1;
 
-    // 6. Address of the contract deployer (the 'Owner')
-    address public owner;
+    event MemberContributed(address indexed contributor, uint256 amount);
+    event ClaimSubmitted(uint256 indexed claimId, address indexed claimant, uint256 amount);
+    event ClaimVoted(uint256 indexed claimId, address indexed voter);
+    event ClaimPaid(uint256 indexed claimId, address indexed payee, uint256 amount);
 
-    // --- EVENTS ---
-
-    event ContributionReceived(address indexed member, uint256 amount);
-    event ClaimSubmitted(address indexed claimant, uint256 amount, uint256 claimId);
-    event ClaimProcessed(uint256 indexed claimId, bool approved, uint256 amountPaid);
-    
-    // [NEW] Event added for administrative transparency
-    event MinContributionUpdated(uint256 oldAmount, uint256 newAmount);
-
-    // --- MODIFIER ---
-
-    // Restricts a function's execution to only the contract owner
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only the contract owner can call this function.");
-        _; // Placeholder for the function body
+        require(msg.sender == owner, "Only the owner can call this function.");
+        _;
     }
 
-    // --- CONSTRUCTOR ---
-    
-    // Runs only once when the contract is deployed
-    constructor() {
-        owner = msg.sender;
+    modifier onlyMember() {
+        require(members[msg.sender].balance >= minimumContribution, "Must be a contributing member.");
+        _;
     }
 
-    // --- CORE FUNCTIONS ---
+    constructor() payable {
+        owner = payable(msg.sender);
+    }
 
-    /**
-     * @notice Allows a user to contribute to the insurance pool.
-     */
     function contribute() public payable {
-        // Enforce the minimum contribution amount
-        require(msg.value >= minContribution, "Contribution must be at least minContribution.");
-        
-        // Update the member's personal contribution record
-        contributions[msg.sender] += msg.value;
-        
-        // Update the total pool balance
+        require(msg.value >= minimumContribution, "Contribution must meet the minimum requirement.");
+
+        if (members[msg.sender].balance == 0) {
+            memberCount++;
+        }
+
+        members[msg.sender].balance += msg.value;
         totalPoolBalance += msg.value;
 
-        emit ContributionReceived(msg.sender, msg.value);
-    }
-    
-    /**
-     * @notice Allows a member to submit a claim for a loss.
-     * @param _amount The amount of Ether requested for the claim.
-     */
-    function submitClaim(uint256 _amount) public {
-        require(contributions[msg.sender] > 0, "Only contributors can submit a claim.");
-        require(_amount <= totalPoolBalance, "Claim amount exceeds total pool balance.");
-        
-        claims.push(Claim({
-            claimant: msg.sender,
-            amountRequested: _amount,
-            approved: false,
-            processed: false
-        }));
-        
-        uint256 newClaimId = claims.length - 1;
-
-        emit ClaimSubmitted(msg.sender, _amount, newClaimId);
+        emit MemberContributed(msg.sender, msg.value);
     }
 
-    /**
-     * @notice The owner processes a claim, approving or rejecting it.
-     * @param _claimId The ID of the claim in the claims array.
-     * @param _approve Boolean indicating whether the claim is approved.
-     */
-    function processClaim(uint256 _claimId, bool _approve) public onlyOwner {
-        require(_claimId < claims.length, "Invalid claim ID.");
+    function registerForCoverage() public onlyMember {
+        members[msg.sender].isInsured = true;
+        members[msg.sender].registrationTimestamp = block.timestamp;
+    }
 
+    function submitClaim(uint256 _amount, string memory _description) public onlyMember {
+        require(members[msg.sender].isInsured, "You must be registered for coverage to submit a claim.");
+        require(_amount > 0, "Claim amount must be greater than zero.");
+
+        claims[nextClaimId].claimId = nextClaimId;
+        claims[nextClaimId].claimant = msg.sender;
+        claims[nextClaimId].amount = _amount;
+        claims[nextClaimId].description = _description;
+        claims[nextClaimId].approved = false;
+        claims[nextClaimId].paidOut = false;
+
+        emit ClaimSubmitted(nextClaimId, msg.sender, _amount);
+        nextClaimId++;
+    }
+
+    function voteOnClaim(uint256 _claimId) public onlyMember {
         Claim storage claim = claims[_claimId];
-        
-        require(!claim.processed, "Claim has already been processed.");
-        
-        claim.approved = _approve;
-        claim.processed = true;
-        
-        if (_approve) {
-            uint256 amountToPay = claim.amountRequested;
-            
-            require(address(this).balance >= amountToPay, "Insufficient actual funds in the pool.");
-            
-            (bool success, ) = claim.claimant.call{value: amountToPay}("");
-            require(success, "Ether transfer failed.");
-            
-            totalPoolBalance -= amountToPay;
+        require(claim.claimId != 0, "Claim does not exist.");
+        require(claim.claimant != msg.sender, "You cannot vote on your own claim.");
+        require(!claim.paidOut, "Claim has already been paid out.");
+        require(!claim.voted[msg.sender], "You have already voted on this claim.");
 
-            emit ClaimProcessed(_claimId, true, amountToPay);
-        } else {
-            emit ClaimProcessed(_claimId, false, 0);
+        claim.voted[msg.sender] = true;
+        claim.totalVotes++;
+
+        uint256 requiredVotes = memberCount / 2 + 1;
+
+        if (claim.totalVotes >= requiredVotes) {
+            claim.approved = true;
+            payClaim(_claimId);
         }
+
+        emit ClaimVoted(_claimId, msg.sender);
     }
 
-    // [NEW] Administrative Function
-    /**
-     * @notice Allows the contract owner to update the minimum required contribution.
-     * @param _newMinContribution The new minimum amount in Wei.
-     */
-    function setMinContribution(uint256 _newMinContribution) public onlyOwner {
-        // Ensure the new minimum contribution is not zero
-        require(_newMinContribution > 0, "Minimum contribution must be greater than zero.");
+    function payClaim(uint256 _claimId) private {
+        Claim storage claim = claims[_claimId];
+        require(claim.approved, "Claim must be approved by the community first.");
+        require(!claim.paidOut, "Claim has already been paid out.");
+        require(totalPoolBalance >= claim.amount, "Insufficient funds in the pool.");
 
-        uint256 oldMin = minContribution;
-        minContribution = _newMinContribution;
-        
-        emit MinContributionUpdated(oldMin, minContribution);
+        claim.paidOut = true;
+        totalPoolBalance -= claim.amount;
+
+        (bool success, ) = payable(claim.claimant).call{value: claim.amount}("");
+        require(success, "Ether transfer failed.");
+
+        emit ClaimPaid(_claimId, claim.claimant, claim.amount);
     }
-    
-    /**
-     * @notice A public view function to check the actual Ether balance of the contract.
-     */
-    function getContractBalance() public view returns (uint256) {
-        return address(this).balance;
+
+    function updateMinimumContribution(uint256 _newMinimum) public onlyOwner {
+        minimumContribution = _newMinimum;
     }
-    
-    // Fallback function to accept raw Ether sends without calling a function
-    receive() external payable {
-        contribute();
+
+    function ownerWithdrawal(uint256 _amount) public onlyOwner {
+        require(_amount <= address(this).balance, "Insufficient contract balance for withdrawal.");
+        (bool success, ) = owner.call{value: _amount}("");
+        require(success, "Withdrawal failed.");
     }
 }
+    }
+}
+
 
