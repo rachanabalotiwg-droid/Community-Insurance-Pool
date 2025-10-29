@@ -1,130 +1,111 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
 
-contract CommunityInsurancePool {
-    address payable public owner;
-    uint256 public minimumContribution = 0.01 ether;
-    uint256 public memberCount = 0;
-    uint256 public totalPoolBalance = 0;
+/// @title Agricultural Traceability - Project.sol
+/// @notice Simple traceability registry for agricultural batches
+contract Project {
+    uint256 private nextId;
 
-    struct Member {
-        uint256 balance;
-        bool isInsured;
-        uint256 registrationTimestamp;
+    struct Trace {
+        uint256 id;
+        string batchId;       // external batch identifier
+        string farmer;        // farmer name or identifier
+        string location;      // origin location
+        uint256 timestamp;    // when recorded
+        string details;       // extra details (crop type, weight, etc.)
+        string status;        // e.g., "harvested", "shipped", "processed"
+        address recorder;     // who recorded this entry
     }
 
-    struct Claim {
-        uint256 claimId;
-        address claimant;
-        uint256 amount;
-        string description;
-        uint256 totalVotes;
-        mapping(address => bool) voted;
-        bool approved;
-        bool paidOut;
+    // id => Trace
+    mapping(uint256 => Trace) private traces;
+    // batchId => latest trace id (optional quick lookup for latest)
+    mapping(string => uint256) private latestByBatch;
+
+    event TraceRecorded(uint256 indexed id, string batchId, address recorder);
+    event TraceUpdated(uint256 indexed id, string newStatus, address updater);
+
+    constructor() {
+        nextId = 1;
     }
 
-    mapping(address => Member) public members;
-    mapping(uint256 => Claim) public claims;
-    uint256 public nextClaimId = 1;
-
-    event MemberContributed(address indexed contributor, uint256 amount);
-    event ClaimSubmitted(uint256 indexed claimId, address indexed claimant, uint256 amount);
-    event ClaimVoted(uint256 indexed claimId, address indexed voter);
-    event ClaimPaid(uint256 indexed claimId, address indexed payee, uint256 amount);
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only the owner can call this function.");
-        _;
+    /// @notice Record a new trace entry for a batch
+    /// @param batchId external identifier for the batch
+    /// @param farmer farmer name or id
+    /// @param location origin location
+    /// @param details extra details like crop, weight, notes
+    /// @param status initial status
+    /// @return id internal numeric id for the trace
+    function recordTrace(
+        string calldata batchId,
+        string calldata farmer,
+        string calldata location,
+        string calldata details,
+        string calldata status
+    ) external returns (uint256) {
+        uint256 id = nextId++;
+        traces[id] = Trace({
+            id: id,
+            batchId: batchId,
+            farmer: farmer,
+            location: location,
+            timestamp: block.timestamp,
+            details: details,
+            status: status,
+            recorder: msg.sender
+        });
+        latestByBatch[batchId] = id;
+        emit TraceRecorded(id, batchId, msg.sender);
+        return id;
     }
 
-    modifier onlyMember() {
-        require(members[msg.sender].balance >= minimumContribution, "Must be a contributing member.");
-        _;
+    /// @notice Update status and details of an existing trace entry
+    /// @param id internal numeric id returned when created
+    /// @param newStatus new status string
+    /// @param newDetails optional updated details
+    function updateTrace(uint256 id, string calldata newStatus, string calldata newDetails) external {
+        require(id > 0 && id < nextId, "Trace: invalid id");
+        Trace storage t = traces[id];
+        // allow anyone to update in this simple example — production should restrict
+        t.status = newStatus;
+        t.details = newDetails;
+        emit TraceUpdated(id, newStatus, msg.sender);
     }
 
-    constructor() payable {
-        owner = payable(msg.sender);
+    /// @notice Retrieve a trace by its internal id
+    /// @param id internal numeric id
+    /// @return Trace struct fields
+    function getTrace(uint256 id) public view returns (
+        uint256,
+        string memory,
+        string memory,
+        string memory,
+        uint256,
+        string memory,
+        string memory,
+        address
+    ) {
+        require(id > 0 && id < nextId, "Trace: invalid id");
+        Trace storage t = traces[id];
+        return (
+            t.id,
+            t.batchId,
+            t.farmer,
+            t.location,
+            t.timestamp,
+            t.details,
+            t.status,
+            t.recorder
+        );
     }
 
-    function contribute() public payable {
-        require(msg.value >= minimumContribution, "Contribution must meet the minimum requirement.");
-
-        if (members[msg.sender].balance == 0) {
-            memberCount++;
-        }
-
-        members[msg.sender].balance += msg.value;
-        totalPoolBalance += msg.value;
-
-        emit MemberContributed(msg.sender, msg.value);
-    }
-
-    function registerForCoverage() public onlyMember {
-        members[msg.sender].isInsured = true;
-        members[msg.sender].registrationTimestamp = block.timestamp;
-    }
-
-    function submitClaim(uint256 _amount, string memory _description) public onlyMember {
-        require(members[msg.sender].isInsured, "You must be registered for coverage to submit a claim.");
-        require(_amount > 0, "Claim amount must be greater than zero.");
-
-        claims[nextClaimId].claimId = nextClaimId;
-        claims[nextClaimId].claimant = msg.sender;
-        claims[nextClaimId].amount = _amount;
-        claims[nextClaimId].description = _description;
-        claims[nextClaimId].approved = false;
-        claims[nextClaimId].paidOut = false;
-
-        emit ClaimSubmitted(nextClaimId, msg.sender, _amount);
-        nextClaimId++;
-    }
-
-    function voteOnClaim(uint256 _claimId) public onlyMember {
-        Claim storage claim = claims[_claimId];
-        require(claim.claimId != 0, "Claim does not exist.");
-        require(claim.claimant != msg.sender, "You cannot vote on your own claim.");
-        require(!claim.paidOut, "Claim has already been paid out.");
-        require(!claim.voted[msg.sender], "You have already voted on this claim.");
-
-        claim.voted[msg.sender] = true;
-        claim.totalVotes++;
-
-        uint256 requiredVotes = memberCount / 2 + 1;
-
-        if (claim.totalVotes >= requiredVotes) {
-            claim.approved = true;
-            payClaim(_claimId);
-        }
-
-        emit ClaimVoted(_claimId, msg.sender);
-    }
-
-    function payClaim(uint256 _claimId) private {
-        Claim storage claim = claims[_claimId];
-        require(claim.approved, "Claim must be approved by the community first.");
-        require(!claim.paidOut, "Claim has already been paid out.");
-        require(totalPoolBalance >= claim.amount, "Insufficient funds in the pool.");
-
-        claim.paidOut = true;
-        totalPoolBalance -= claim.amount;
-
-        (bool success, ) = payable(claim.claimant).call{value: claim.amount}("");
-        require(success, "Ether transfer failed.");
-
-        emit ClaimPaid(_claimId, claim.claimant, claim.amount);
-    }
-
-    function updateMinimumContribution(uint256 _newMinimum) public onlyOwner {
-        minimumContribution = _newMinimum;
-    }
-
-    function ownerWithdrawal(uint256 _amount) public onlyOwner {
-        require(_amount <= address(this).balance, "Insufficient contract balance for withdrawal.");
-        (bool success, ) = owner.call{value: _amount}("");
-        require(success, "Withdrawal failed.");
+    /// @notice Get the latest trace id for a given batchId (0 if none)
+    function getLatestByBatch(string calldata batchId) external view returns (uint256) {
+        return latestByBatch[batchId];
     }
 }
-    }
+
 }
+
 
 
