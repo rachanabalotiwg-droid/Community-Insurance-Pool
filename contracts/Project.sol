@@ -1,111 +1,131 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-/// @title Agricultural Traceability - Project.sol
-/// @notice Simple traceability registry for agricultural batches
+/// @title Community Insurance Pool
+/// @notice A decentralized community-driven insurance fund where members contribute and claim.
 contract Project {
-    uint256 private nextId;
+    address public admin;
+    uint256 public totalPoolBalance;
+    uint256 public nextClaimId;
 
-    struct Trace {
-        uint256 id;
-        string batchId;       // external batch identifier
-        string farmer;        // farmer name or identifier
-        string location;      // origin location
-        uint256 timestamp;    // when recorded
-        string details;       // extra details (crop type, weight, etc.)
-        string status;        // e.g., "harvested", "shipped", "processed"
-        address recorder;     // who recorded this entry
+    struct Member {
+        bool isMember;
+        uint256 contribution;
     }
 
-    // id => Trace
-    mapping(uint256 => Trace) private traces;
-    // batchId => latest trace id (optional quick lookup for latest)
-    mapping(string => uint256) private latestByBatch;
+    struct Claim {
+        uint256 id;
+        address claimant;
+        uint256 amount;
+        string reason;
+        bool approved;
+        bool settled;
+    }
 
-    event TraceRecorded(uint256 indexed id, string batchId, address recorder);
-    event TraceUpdated(uint256 indexed id, string newStatus, address updater);
+    mapping(address => Member) public members;
+    mapping(uint256 => Claim) public claims;
+
+    event MemberJoined(address indexed member, uint256 amount);
+    event ContributionAdded(address indexed member, uint256 amount);
+    event ClaimSubmitted(uint256 indexed id, address indexed claimant, uint256 amount, string reason);
+    event ClaimApproved(uint256 indexed id, address indexed claimant, uint256 amount);
+    event ClaimRejected(uint256 indexed id, address indexed claimant);
+    event ClaimSettled(uint256 indexed id, address indexed claimant, uint256 amount);
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can perform this action");
+        _;
+    }
+
+    modifier onlyMember() {
+        require(members[msg.sender].isMember, "Only members can perform this action");
+        _;
+    }
 
     constructor() {
-        nextId = 1;
+        admin = msg.sender;
+        nextClaimId = 1;
     }
 
-    /// @notice Record a new trace entry for a batch
-    /// @param batchId external identifier for the batch
-    /// @param farmer farmer name or id
-    /// @param location origin location
-    /// @param details extra details like crop, weight, notes
-    /// @param status initial status
-    /// @return id internal numeric id for the trace
-    function recordTrace(
-        string calldata batchId,
-        string calldata farmer,
-        string calldata location,
-        string calldata details,
-        string calldata status
-    ) external returns (uint256) {
-        uint256 id = nextId++;
-        traces[id] = Trace({
-            id: id,
-            batchId: batchId,
-            farmer: farmer,
-            location: location,
-            timestamp: block.timestamp,
-            details: details,
-            status: status,
-            recorder: msg.sender
+    /// @notice Join the insurance pool by contributing Ether
+    function joinPool() external payable {
+        require(msg.value > 0, "Must send Ether to join");
+        require(!members[msg.sender].isMember, "Already a member");
+
+        members[msg.sender] = Member({isMember: true, contribution: msg.value});
+        totalPoolBalance += msg.value;
+
+        emit MemberJoined(msg.sender, msg.value);
+    }
+
+    /// @notice Add more contributions to the pool
+    function addContribution() external payable onlyMember {
+        require(msg.value > 0, "Contribution must be > 0");
+        members[msg.sender].contribution += msg.value;
+        totalPoolBalance += msg.value;
+
+        emit ContributionAdded(msg.sender, msg.value);
+    }
+
+    /// @notice Submit an insurance claim
+    /// @param amount Amount requested from the pool
+    /// @param reason Description of the loss event
+    function submitClaim(uint256 amount, string calldata reason) external onlyMember {
+        require(amount > 0, "Invalid claim amount");
+        require(amount <= totalPoolBalance, "Requested amount exceeds pool");
+
+        uint256 claimId = nextClaimId++;
+        claims[claimId] = Claim({
+            id: claimId,
+            claimant: msg.sender,
+            amount: amount,
+            reason: reason,
+            approved: false,
+            settled: false
         });
-        latestByBatch[batchId] = id;
-        emit TraceRecorded(id, batchId, msg.sender);
-        return id;
+
+        emit ClaimSubmitted(claimId, msg.sender, amount, reason);
     }
 
-    /// @notice Update status and details of an existing trace entry
-    /// @param id internal numeric id returned when created
-    /// @param newStatus new status string
-    /// @param newDetails optional updated details
-    function updateTrace(uint256 id, string calldata newStatus, string calldata newDetails) external {
-        require(id > 0 && id < nextId, "Trace: invalid id");
-        Trace storage t = traces[id];
-        // allow anyone to update in this simple example — production should restrict
-        t.status = newStatus;
-        t.details = newDetails;
-        emit TraceUpdated(id, newStatus, msg.sender);
+    /// @notice Admin approves a submitted claim
+    function approveClaim(uint256 claimId) external onlyAdmin {
+        Claim storage c = claims[claimId];
+        require(!c.approved && !c.settled, "Claim already handled");
+        c.approved = true;
+
+        emit ClaimApproved(claimId, c.claimant, c.amount);
     }
 
-    /// @notice Retrieve a trace by its internal id
-    /// @param id internal numeric id
-    /// @return Trace struct fields
-    function getTrace(uint256 id) public view returns (
-        uint256,
-        string memory,
-        string memory,
-        string memory,
-        uint256,
-        string memory,
-        string memory,
-        address
-    ) {
-        require(id > 0 && id < nextId, "Trace: invalid id");
-        Trace storage t = traces[id];
-        return (
-            t.id,
-            t.batchId,
-            t.farmer,
-            t.location,
-            t.timestamp,
-            t.details,
-            t.status,
-            t.recorder
-        );
+    /// @notice Admin rejects a submitted claim
+    function rejectClaim(uint256 claimId) external onlyAdmin {
+        Claim storage c = claims[claimId];
+        require(!c.approved && !c.settled, "Claim already handled");
+
+        c.settled = true;
+        emit ClaimRejected(claimId, c.claimant);
     }
 
-    /// @notice Get the latest trace id for a given batchId (0 if none)
-    function getLatestByBatch(string calldata batchId) external view returns (uint256) {
-        return latestByBatch[batchId];
+    /// @notice Admin settles an approved claim by paying claimant
+    function settleClaim(uint256 claimId) external onlyAdmin {
+        Claim storage c = claims[claimId];
+        require(c.approved, "Claim not approved");
+        require(!c.settled, "Already settled");
+        require(totalPoolBalance >= c.amount, "Insufficient pool balance");
+
+        c.settled = true;
+        totalPoolBalance -= c.amount;
+
+        payable(c.claimant).transfer(c.amount);
+        emit ClaimSettled(claimId, c.claimant, c.amount);
+    }
+
+    /// @notice Get member details
+    function getMember(address member) external view returns (bool, uint256) {
+        Member storage m = members[member];
+        return (m.isMember, m.contribution);
     }
 }
 
-}
 
 
 
