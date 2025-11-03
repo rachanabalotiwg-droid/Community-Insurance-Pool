@@ -25,6 +25,12 @@ To empower communities with self-managed insurance solutions that promote trust,
    ```bash
    git clone <repo-link>
    cd community-insurance-pool
+## Deployment Details
+
+**Network:** Core Testnet 2  
+**Deployed Contract Address:** `0x12831e1e02b372e73e03Ae377532Ee8B679A511d`  
+**Verification:** Verified on Sourcify ✅  
+**Deployed Using:** Remix IDE (Injected Provider - MetaMask)
 
 
 ​
